@@ -51,6 +51,7 @@ namespace VRTK
 
         private Joint controllerAttachJoint;
         private GameObject grabbedObject = null;
+        private bool affectingGrabbedObject = false;
         private bool updatedHideControllerOnGrab = false;
         private VRTK_InteractTouch interactTouch;
         private VRTK_ControllerActions controllerActions;
@@ -87,7 +88,7 @@ namespace VRTK
             }
             else
             {
-                ReleaseObject(false);
+                UngrabInteractedObject(false);
             }
         }
 
@@ -347,12 +348,15 @@ namespace VRTK
 
         private bool GrabInteractedObject()
         {
-            if (controllerAttachJoint == null && grabbedObject == null && IsObjectGrabbable(interactTouch.GetTouchedObject()))
+            if (controllerAttachJoint == null)
             {
                 InitGrabbedObject();
                 if (grabbedObject)
                 {
-                    SnapObjectToGrabToController(grabbedObject);
+                    if (!affectingGrabbedObject)
+                    {
+                        SnapObjectToGrabToController(grabbedObject);
+                    }
                     return true;
                 }
             }
@@ -361,30 +365,23 @@ namespace VRTK
 
         private bool GrabTrackedObject()
         {
-            if (grabbedObject == null && IsObjectGrabbable(interactTouch.GetTouchedObject()))
+            InitGrabbedObject();
+            if (grabbedObject)
             {
-                InitGrabbedObject();
-                if (grabbedObject)
+                if (!affectingGrabbedObject)
                 {
                     var objectScript = grabbedObject.GetComponent<VRTK_InteractableObject>();
                     objectScript.SetGrabbedSnapHandle(GetSnapHandle(objectScript));
-                    return true;
                 }
+                return true;
             }
             return false;
         }
 
         private bool GrabClimbObject()
         {
-            if (grabbedObject == null && IsObjectGrabbable(interactTouch.GetTouchedObject()))
-            {
-                InitGrabbedObject();
-                if (grabbedObject)
-                {
-                    return true;
-                }
-            }
-            return false;
+            InitGrabbedObject();
+            return (grabbedObject ? true : false);
         }
 
         private void InitGrabbedObject()
@@ -394,35 +391,66 @@ namespace VRTK
             {
                 var grabbedObjectScript = grabbedObject.GetComponent<VRTK_InteractableObject>();
 
-                if (!grabbedObjectScript.IsValidInteractableController(gameObject, grabbedObjectScript.allowedGrabControllers))
+                if (!grabbedObjectScript.IsGrabbed() || grabbedObjectScript.IsSwappable())
                 {
-                    grabbedObject = null;
-                    interactTouch.ForceStopTouching();
-                    return;
+                    InitGrabHold(grabbedObjectScript);
                 }
+                else
+                {
+                    InitGrabAffect(grabbedObjectScript);
+                }
+
+                updatedHideControllerOnGrab = grabbedObjectScript.CheckHideMode(hideControllerOnGrab, grabbedObjectScript.hideControllerOnGrab);
 
                 OnControllerGrabInteractableObject(interactTouch.SetControllerInteractEvent(grabbedObject));
-
-                grabbedObjectScript.SaveCurrentState();
-                grabbedObjectScript.Grabbed(gameObject);
-                grabbedObjectScript.ZeroVelocity();
-                grabbedObjectScript.ToggleHighlight(false);
-                grabbedObjectScript.ToggleKinematic(false);
-
-                //Pause collisions (if allowed on object) for a moment whilst sorting out position to prevent clipping issues
-                grabbedObjectScript.PauseCollisions();
-
-                if (grabbedObjectScript.grabAttachMechanic == VRTK_InteractableObject.GrabAttachType.Child_Of_Controller)
-                {
-                    grabbedObjectScript.ToggleKinematic(true);
-                }
-                updatedHideControllerOnGrab = grabbedObjectScript.CheckHideMode(hideControllerOnGrab, grabbedObjectScript.hideControllerOnGrab);
             }
 
             if (updatedHideControllerOnGrab)
             {
                 Invoke("HideController", hideControllerDelay);
             }
+        }
+
+        private void InitGrabHold(VRTK_InteractableObject heldObject)
+        {
+            if (!heldObject.IsValidInteractableController(gameObject, heldObject.allowedGrabControllers))
+            {
+                grabbedObject = null;
+                if (heldObject.IsGrabbed(gameObject))
+                {
+                    interactTouch.ForceStopTouching();
+                }
+                return;
+            }
+
+            affectingGrabbedObject = false;
+            heldObject.SaveCurrentState();
+            heldObject.Grabbed(gameObject);
+            heldObject.ZeroVelocity();
+            heldObject.ToggleHighlight(false);
+            heldObject.ToggleKinematic(false);
+
+            //Pause collisions (if allowed on object) for a moment whilst sorting out position to prevent clipping issues
+            heldObject.PauseCollisions();
+
+            if (heldObject.grabAttachMechanic == VRTK_InteractableObject.GrabAttachType.Child_Of_Controller)
+            {
+                heldObject.ToggleKinematic(true);
+            }
+        }
+
+        private void InitGrabAffect(VRTK_InteractableObject affectObject)
+        {
+            if (!affectObject.IsValidInteractableController(gameObject, affectObject.allowedGrabControllers))
+            {
+                grabbedObject = null;
+                affectingGrabbedObject = false;
+                affectObject.Ungrabbed(gameObject);
+                return;
+            }
+
+            affectingGrabbedObject = true;
+            affectObject.Grabbed(gameObject);
         }
 
         private void HideController()
@@ -436,7 +464,7 @@ namespace VRTK
 
         private void UngrabInteractedObject(bool withThrow)
         {
-            if (grabbedObject != null)
+            if (grabbedObject != null && !affectingGrabbedObject)
             {
                 Rigidbody releasedObjectRigidBody = ReleaseGrabbedObjectFromController(withThrow);
                 if (withThrow)
@@ -465,7 +493,6 @@ namespace VRTK
 
         private void InitUngrabbedObject()
         {
-            OnControllerUngrabInteractableObject(interactTouch.SetControllerInteractEvent(grabbedObject));
             if (grabbedObject != null)
             {
                 grabbedObject.GetComponent<VRTK_InteractableObject>().Ungrabbed(gameObject);
@@ -478,14 +505,15 @@ namespace VRTK
                 controllerVisibilityState = true;
             }
 
+            if (!affectingGrabbedObject)
+            {
+                interactTouch.ForceStopTouching();
+            }
+            affectingGrabbedObject = false;
+
+            OnControllerUngrabInteractableObject(interactTouch.SetControllerInteractEvent(grabbedObject));
             grabEnabledState = 0;
             grabbedObject = null;
-            interactTouch.ForceStopTouching();
-        }
-
-        private void ReleaseObject(bool withThrow)
-        {
-            UngrabInteractedObject(withThrow);
         }
 
         private GameObject GetGrabbableObject()
@@ -513,18 +541,11 @@ namespace VRTK
             {
                 IncrementGrabState();
                 var initialGrabAttempt = false;
+                var objectToGrabScript = objectToGrab.GetComponent<VRTK_InteractableObject>();
 
-                if (objectToGrab.GetComponent<VRTK_InteractableObject>().AttachIsTrackObject())
+                if (grabbedObject == null && IsObjectGrabbable(interactTouch.GetTouchedObject()))
                 {
-                    initialGrabAttempt = GrabTrackedObject();
-                }
-                else if (objectToGrab.GetComponent<VRTK_InteractableObject>().AttachIsClimbObject())
-                {
-                    initialGrabAttempt = GrabClimbObject();
-                }
-                else
-                {
-                    initialGrabAttempt = GrabInteractedObject();
+                    initialGrabAttempt = CheckGrabAttempt(objectToGrabScript);
                 }
 
                 undroppableGrabbedObject = (grabbedObject && grabbedObject.GetComponent<VRTK_InteractableObject>() && !grabbedObject.GetComponent<VRTK_InteractableObject>().IsDroppable() ? grabbedObject : null);
@@ -544,6 +565,20 @@ namespace VRTK
             }
         }
 
+        private bool CheckGrabAttempt(VRTK_InteractableObject objectToGrab)
+        {
+            if (objectToGrab.AttachIsTrackObject())
+            {
+                return GrabTrackedObject();
+            }
+            else if (objectToGrab.AttachIsClimbObject())
+            {
+                return GrabClimbObject();
+            }
+
+            return GrabInteractedObject();
+        }
+
         private bool CanRelease()
         {
             return (grabbedObject && grabbedObject.GetComponent<VRTK_InteractableObject>().IsDroppable());
@@ -553,17 +588,19 @@ namespace VRTK
         {
             if (CanRelease() && (IsObjectHoldOnGrab(grabbedObject) || grabEnabledState >= 2))
             {
-                if (grabbedObject.GetComponent<VRTK_InteractableObject>().AttachIsUnthrowableObject())
+                var grabbedObjectScript = grabbedObject.GetComponent<VRTK_InteractableObject>();
+
+                if (grabbedObjectScript.AttachIsUnthrowableObject())
                 {
                     UngrabTrackedObject();
                 }
-                else if (grabbedObject.GetComponent<VRTK_InteractableObject>().AttachIsClimbObject())
+                else if (grabbedObjectScript.AttachIsClimbObject())
                 {
                     UngrabClimbObject();
                 }
                 else
                 {
-                    ReleaseObject(true);
+                    UngrabInteractedObject(true);
                 }
             }
         }
